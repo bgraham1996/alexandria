@@ -26,7 +26,8 @@ uv tool install ~/dev/alexandria     # provides the `alexandria` command on PATH
 Or run from a source checkout during development:
 
 ```bash
-cd ~/dev/alexandria
+git clone https://github.com/bgraham1996/alexandria.git
+cd alexandria
 uv sync
 uv run alexandria --help
 ```
