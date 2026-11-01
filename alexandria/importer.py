@@ -135,9 +135,13 @@ def get_pdf_metadata(pdf_path: str) -> dict:
 # Paper detection — heuristic checks
 # =========================================================================
 
-DOI_RE = re.compile(r'\b(10\.\d{4,9}/[-._;()/:A-Z0-9]+)', re.IGNORECASE)
+# The leading (?<!\d) (instead of \b) lets us catch DOIs glued to preceding
+# text — publisher stamps like "PPSXXX10.1177/17456916231179146" — while still
+# refusing to start mid-number. A glued trailing word (an author surname run
+# together with the DOI) is trimmed in extract_doi's _clean().
+DOI_RE = re.compile(r'(?<!\d)(10\.\d{4,9}/[-._;()/:A-Z0-9]+)', re.IGNORECASE)
 # Also try joining lines to catch DOIs split across line breaks
-DOI_MULTILINE_RE = re.compile(r'\b(10\.\d{4,9}/\S+)', re.IGNORECASE)
+DOI_MULTILINE_RE = re.compile(r'(?<!\d)(10\.\d{4,9}/\S+)', re.IGNORECASE)
 ARXIV_RE = re.compile(r'arXiv:(\d{4}\.\d{4,5}(?:v\d+)?)', re.IGNORECASE)
 
 SECTION_HEADINGS = [
@@ -379,7 +383,13 @@ def extract_doi(text: str) -> str | None:
     Trailing punctuation is stripped so lookups don't 404 on a stray ';'/'.'.
     """
     def _clean(doi: str) -> str:
-        return re.sub(r'[\s.,;:]+$', '', doi)
+        doi = re.sub(r'[\s.,;:]+$', '', doi)
+        # Trim a capitalised word glued onto a numeric suffix — e.g.
+        # "10.1177/17456916231179146Sherman" (publisher stamp + author) ->
+        # "10.1177/17456916231179146". Only fires when the word directly
+        # follows a digit, so real letter-containing DOIs are untouched.
+        doi = re.sub(r'(?<=\d)[A-Z][a-zA-Z]+$', '', doi)
+        return doi
 
     raw = []
     for pat, source in ((DOI_RE, text),
@@ -526,6 +536,61 @@ def lookup_crossref_title(title: str) -> dict | None:
     except Exception:
         pass
     return None
+
+
+def lookup_crossref_bibliographic(query: str, rows: int = 3) -> list[dict]:
+    """Free-text CrossRef search (title + authors + year). Returns ranked
+    candidate items; validation against the source filename happens in the
+    caller so a confident author/year match is required before we trust it.
+    """
+    try:
+        r = requests.get("https://api.crossref.org/works",
+                         params={"query.bibliographic": query, "rows": rows},
+                         headers=HEADERS, timeout=15)
+        if r.status_code == 200:
+            return r.json().get("message", {}).get("items", []) or []
+    except Exception:
+        pass
+    return []
+
+
+def _item_year(item: dict) -> str | None:
+    for part in ("published-print", "published-online", "published", "issued"):
+        parts = item.get(part, {}).get("date-parts", [[None]])
+        if parts and parts[0] and parts[0][0]:
+            return str(parts[0][0])
+    return None
+
+
+def _biblio_matches(item: dict, filename: str) -> bool:
+    """True if a CrossRef candidate confidently matches the PDF's filename.
+
+    Conservative on purpose: we only accept a free-text hit when either the
+    first author's surname and (if present) the year from the filename line up,
+    or the title words overlap heavily. This keeps the fallback from importing
+    a plausible-looking wrong paper (e.g. a "Faculty Opinions recommendation
+    of ..." decoy that shares the title but not the author).
+    """
+    if item.get("type") not in (
+        "journal-article", "proceedings-article", "book-chapter",
+        "posted-content", "book", "monograph",
+    ):
+        return False
+    stem = re.sub(r'[-_]+', ' ', Path(filename).stem).lower()
+    tokens = set(stem.split())
+
+    authors = item.get("author", []) or []
+    family = authors[0].get("family", "").lower() if authors else ""
+    author_ok = bool(family) and family in tokens
+
+    file_year = re.search(r'\b(?:19|20)\d{2}\b', stem)
+    year_ok = (file_year is None) or (_item_year(item) == file_year.group(0))
+
+    title = " ".join(item.get("title", []) or []).lower()
+    title_words = set(re.findall(r'[a-z]{3,}', title))
+    overlap = (len(title_words & tokens) / len(title_words)) if title_words else 0.0
+
+    return (author_ok and year_ok) or overlap >= 0.6
 
 
 def lookup_openalex_arxiv(arxiv_id: str) -> dict | None:
@@ -817,6 +882,34 @@ def process_pdf(
         if cr:
             zotero_item = crossref_to_zotero(cr)
             source = "CrossRef (title)"
+
+    # Fallback: BMC-family filenames are the DOI suffix under the 10.1186
+    # prefix, e.g. "2041-9139-5-34.pdf" -> 10.1186/2041-9139-5-34.
+    if not zotero_item:
+        stem = Path(filename).stem
+        if re.fullmatch(r'\d{4}-\d{3}[\dxX]-\d+-\d+', stem):
+            guess = f"10.1186/{stem}"
+            log(f"  Trying BMC filename DOI {guess}...")
+            cr = lookup_crossref_doi(guess)
+            if cr and cr.get("type") == "journal-article":
+                zotero_item = crossref_to_zotero(cr)
+                source = "CrossRef (filename DOI)"
+
+    # Fallback: treat a descriptive filename (author-year-title words) as a
+    # CrossRef bibliographic query, accepting a hit only if it confidently
+    # matches the filename (see _biblio_matches).
+    if not zotero_item:
+        query = re.sub(r'\bet al\b', ' ',
+                       re.sub(r'[-_]+', ' ', Path(filename).stem),
+                       flags=re.IGNORECASE)
+        query = re.sub(r'\s+', ' ', query).strip()
+        if len(re.findall(r'[A-Za-z]{3,}', query)) >= 3:
+            log(f"  Searching CrossRef by filename...")
+            for cand in lookup_crossref_bibliographic(query):
+                if _biblio_matches(cand, filename):
+                    zotero_item = crossref_to_zotero(cand)
+                    source = "CrossRef (filename)"
+                    break
 
     if not zotero_item:
         result["status"] = "no_metadata"
