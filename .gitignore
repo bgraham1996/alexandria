@@ -1,8 +1,8 @@
-# Secrets / personal config
-configs/.env
-configs/config.yaml
-
-# Runtime export state (machine-local; keep on disk, don't track)
+# Secrets / personal config now live in ~/.config/alexandria (outside the repo).
+# These guard against anyone pointing $ALEXANDRIA_CONFIG back into the checkout.
+.env
+config.yaml
+export_state.json
 .obsidian_export_state.json
 
 # Python / uv

@@ -23,7 +23,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from config import load_env, load_settings, expand
+from alexandria.config import load_env, load_settings, expand
 from pyzotero import zotero
 
 # Titles that are really a journal/container name — a sign title extraction
@@ -56,7 +56,7 @@ def pdf_stored(zot, key: str) -> bool:
     return False
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true",
@@ -64,7 +64,7 @@ def main():
     ap.add_argument("--source-dir",
                     help="Directory of PDFs to match against "
                          "(default: import.output_dir from config.yaml).")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     load_env()
     s = load_settings()

@@ -2,7 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python](https://img.shields.io/badge/python-3.13-blue.svg) ![uv](https://img.shields.io/badge/managed%20with-uv-6340ac.svg)
 
-A two-stage research-paper pipeline between **Zotero** and **Obsidian**:
+A two-stage research-paper pipeline between **Zotero** and **Obsidian**, exposed
+as a single `alexandria` command with a CLI and a Textual TUI.
 
 1. **Import** — scan a folder of PDFs, detect which are research papers
    (heuristic confidence score), extract DOI / arXiv / title, look up full
@@ -11,57 +12,79 @@ A two-stage research-paper pipeline between **Zotero** and **Obsidian**:
 2. **Export** — pull Zotero items carrying a tag (default `obs`) and write an
    Obsidian markdown note for each (YAML frontmatter, Zotero / Advanced-URI
    buttons, Dataview reading-notes block). Already-exported items are tracked in
-   `.obsidian_export_state.json` so re-runs don't duplicate notes.
+   the export state so re-runs don't duplicate notes.
 
-This project was consolidated from standalone scripts that previously lived in
-`~/Stacks/Scripts/`.
+## Install
 
-## Layout
+Install it as a global tool — no shell aliases required:
 
-```
-app/
-  config.py           # shared: resolves paths, loads .env + config.yaml
-  paper_importer.py   # stage 1: PDFs -> Zotero
-  paper_exporter.py   # stage 2: Zotero -> Obsidian notes
-configs/
-  config.example.yaml # template -> copy to config.yaml
-  config.yaml         # your settings (vault path, dirs, thresholds); gitignored
-  .env                # Zotero API credentials (gitignored)
-  .env.example        # template for .env
-.obsidian_export_state.json   # export state (machine-local, gitignored)
+```bash
+uv tool install ~/dev/alexandria     # provides the `alexandria` command on PATH
+# later: uv tool upgrade alexandria  (after pulling changes / bumping version)
 ```
 
-## Setup
+Or run from a source checkout during development:
 
 ```bash
 cd ~/dev/alexandria
-uv sync                       # create .venv and install deps
-cp configs/config.example.yaml configs/config.yaml  # then edit paths
-cp configs/.env.example configs/.env               # then fill in Zotero keys
+uv sync
+uv run alexandria --help
 ```
 
-Edit `configs/config.yaml` for your vault path, source/output folders,
-detection threshold, and tags. Get Zotero API credentials from
-<https://www.zotero.org/settings/keys>.
+## Configure
+
+Config and secrets live in **`~/.config/alexandria/`** (override with
+`$ALEXANDRIA_CONFIG`), independent of where the code is installed:
+
+```bash
+alexandria config init    # create config.yaml + .env from templates
+alexandria config edit    # open config.yaml in $EDITOR
+alexandria config path    # show the config home and file status
+```
+
+- `config.yaml` — non-secret settings: vault path, source/output folders,
+  detection threshold, tags.
+- `.env` — Zotero API credentials (`ZOTERO_LIBRARY_ID`, `ZOTERO_API_KEY`), from
+  <https://www.zotero.org/settings/keys>.
+
+CLI flags always override `config.yaml`.
 
 ## Usage
 
 ```bash
-# Import every PDF in the configured source_dir into Zotero
-uv run python app/paper_importer.py
-
-# ...or point at a specific file/folder and override settings
-uv run python app/paper_importer.py ~/Downloads/paper.pdf --threshold 40 --dry-run
-
-# Export tagged Zotero items to Obsidian notes
-uv run python app/paper_exporter.py
-
-# Preview the export without writing files
-uv run python app/paper_exporter.py --dry-run
+alexandria import                      # import every PDF in source_dir
+alexandria import ~/Downloads/p.pdf --threshold 40 --dry-run
+alexandria export                      # export tagged Zotero items to Obsidian
+alexandria export --dry-run
+alexandria library                     # import then export (the full pipeline)
+alexandria library --dry-run
+alexandria backfill                    # dry-run: find link-only items to fix
+alexandria backfill --apply            # attach the matched PDFs
+alexandria tui                         # interactive terminal UI
 ```
 
-CLI flags always override `config.yaml`. The shell aliases `importpapers`,
-`exportpapers`, and `library` (run both) point at this project.
+### TUI
+
+`alexandria tui` opens a dashboard showing the resolved configuration and PDF
+count, with buttons (or keys `i`/`e`/`l`) to run import, export, or the full
+library pipeline — output streams into a log pane. Toggle **Dry run** to preview
+without writing.
+
+## Layout
+
+```
+alexandria/
+  __init__.py
+  config.py     # config home (~/.config/alexandria), .env + config.yaml, migration
+  cli.py        # the `alexandria` entry point (argparse dispatcher)
+  tui.py        # Textual terminal UI
+  importer.py   # stage 1: PDFs -> Zotero
+  exporter.py   # stage 2: Zotero -> Obsidian notes
+  backfill.py   # repair tool: attach PDFs to link-only items
+```
+
+This project was consolidated from standalone scripts that previously lived in
+`~/Stacks/Scripts/`.
 
 ## License
 

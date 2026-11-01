@@ -43,7 +43,7 @@ from pathlib import Path
 
 import requests
 
-from config import load_env, load_settings, expand
+from alexandria.config import load_env, load_settings, expand
 
 # Suppress noisy warnings from pypdf about malformed PDFs
 logging.getLogger("pypdf").setLevel(logging.ERROR)
@@ -968,8 +968,8 @@ def process_pdf(
 # Entry point
 # =========================================================================
 
-def main():
-    # Non-secret defaults come from configs/config.yaml; CLI flags override.
+def main(argv=None):
+    # Non-secret defaults come from config.yaml; CLI flags override.
     imp = load_settings().get("import", {})
 
     parser = argparse.ArgumentParser(
@@ -995,7 +995,7 @@ def main():
                         help="Output results as JSON")
     parser.add_argument("--quiet", "-q", action="store_true",
                         help="Suppress progress output (use with --json)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Fall back to config.yaml for the scan path and tag when not given.
     if args.path is None:

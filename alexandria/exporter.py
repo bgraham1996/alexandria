@@ -45,7 +45,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from config import load_env, load_settings, expand, STATE_FILE
+from alexandria.config import load_env, load_settings, expand, STATE_FILE
 
 try:
     from pyzotero import zotero
@@ -437,7 +437,7 @@ def export_items(
 # CLI
 # ---------------------------------------------------------------------------
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Export Zotero items to Obsidian markdown notes",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -494,7 +494,7 @@ Examples:
         help="Suppress progress output",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.reset_state:
         if STATE_FILE.exists():
