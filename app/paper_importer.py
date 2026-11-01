@@ -529,13 +529,21 @@ def lookup_crossref_title(title: str) -> dict | None:
 
 
 def lookup_openalex_arxiv(arxiv_id: str) -> dict | None:
-    try:
-        r = requests.get(f"https://api.openalex.org/works/https://arxiv.org/abs/{arxiv_id}",
-                         headers=HEADERS, timeout=15)
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        pass
+    # Prefer the arXiv DOI form (10.48550/arXiv.<id>), which OpenAlex resolves
+    # reliably; the legacy abs-URL form often 404s. Strip any version suffix
+    # for the DOI lookup.
+    base = re.sub(r'v\d+$', '', arxiv_id)
+    urls = [
+        f"https://api.openalex.org/works/doi:10.48550/arXiv.{base}",
+        f"https://api.openalex.org/works/https://arxiv.org/abs/{arxiv_id}",
+    ]
+    for url in urls:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            pass
     return None
 
 
@@ -762,6 +770,17 @@ def process_pdf(
         doi = doi.rstrip("-").rstrip()
 
     arxiv_id = extract_arxiv_id(full_text)
+
+    # Fallback: many arXiv PDFs are saved under their bare ID (e.g.
+    # "2003.11917v1.pdf") without an "arXiv:" string on the page. Pull the ID
+    # from the filename when the text didn't yield one. The YYMM.NNNNN shape
+    # (4 digits . 4-5 digits) won't match bioRxiv-style dated names like
+    # "2022.05.02.490321" (only 2 digits after the first dot).
+    if not arxiv_id:
+        m = re.search(r'\b(\d{4}\.\d{4,5})(?:v\d+)?\b', filename)
+        if m:
+            arxiv_id = m.group(1)
+
     title = extract_title(pages[0] if pages else "")
 
     log(f"  DOI:   {doi or 'not found'}")
