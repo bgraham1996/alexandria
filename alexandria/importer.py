@@ -565,11 +565,15 @@ def _item_year(item: dict) -> str | None:
 def _biblio_matches(item: dict, filename: str) -> bool:
     """True if a CrossRef candidate confidently matches the PDF's filename.
 
-    Conservative on purpose: we only accept a free-text hit when either the
-    first author's surname and (if present) the year from the filename line up,
-    or the title words overlap heavily. This keeps the fallback from importing
-    a plausible-looking wrong paper (e.g. a "Faculty Opinions recommendation
-    of ..." decoy that shares the title but not the author).
+    Conservative on purpose. We accept a free-text hit only when either:
+      * the first author's surname and (if present) the filename year match, or
+      * the titles overlap heavily *and* share enough distinct content words
+        that the match can't be a coincidence.
+    The word-count floor on the title path is essential: a short CrossRef title
+    like "Dream Revelations" would otherwise score 100% overlap against a file
+    named "Revelations_of_the_Dream.pdf" and import an unrelated work by a
+    different author. Requiring several shared words (and a corroborating year
+    when the filename has one) blocks that class of false positive.
     """
     if item.get("type") not in (
         "journal-article", "proceedings-article", "book-chapter",
@@ -588,9 +592,11 @@ def _biblio_matches(item: dict, filename: str) -> bool:
 
     title = " ".join(item.get("title", []) or []).lower()
     title_words = set(re.findall(r'[a-z]{3,}', title))
-    overlap = (len(title_words & tokens) / len(title_words)) if title_words else 0.0
+    shared = title_words & tokens
+    overlap = (len(shared) / len(title_words)) if title_words else 0.0
+    strong_title = overlap >= 0.6 and len(shared) >= 4
 
-    return (author_ok and year_ok) or overlap >= 0.6
+    return (author_ok and year_ok) or (strong_title and year_ok)
 
 
 def lookup_openalex_arxiv(arxiv_id: str) -> dict | None:
