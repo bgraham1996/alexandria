@@ -1,0 +1,14 @@
+# Secrets
+configs/.env
+
+# Runtime export state (machine-local; keep on disk, don't track)
+.obsidian_export_state.json
+
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.python-version.local
+
+# macOS
+.DS_Store

@@ -1,0 +1,31 @@
+# Alexandria — paper pipeline configuration
+#
+# Non-secret settings only. Zotero API credentials live in configs/.env
+# (see .env.example). CLI flags on the import/export scripts override the
+# values here.
+
+zotero:
+  # "user" or "group"
+  library_type: user
+
+obsidian:
+  # Path to the Obsidian vault (moved here from the old OBSIDIAN_VAULT_PATH)
+  vault_path: ~/Vaults/Immrama
+  # Subfolder within the vault where paper notes are written
+  notes_folder: Immrama/Papers
+
+import:
+  # Folder scanned for incoming PDFs
+  source_dir: ~/Documents/Unsorted-PDFs
+  # Imported PDFs are renamed to their title and moved here
+  output_dir: ~/Documents/Sorted-Papers
+  # Detection confidence threshold (0-100); below this a PDF is skipped
+  threshold: 25
+  # Tag applied to newly created Zotero items (the exporter looks for this)
+  tag: obs
+
+export:
+  # Zotero tag whose items get exported to Obsidian
+  tag: obs
+  # Remove the tag from the Zotero item after a successful export
+  remove_tag: true
