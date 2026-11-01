@@ -568,13 +568,16 @@ def crossref_to_zotero(cr: dict) -> dict:
         p = date_parts[0]
         date_str = f"{p[0]}" + (f"-{p[1]:02d}" if len(p) > 1 else "") + (f"-{p[2]:02d}" if len(p) > 2 else "")
 
-    # Strip JATS XML tags from abstract
-    abstract = cr.get("abstract", "")
-    abstract = re.sub(r'<[^>]+>', '', abstract).strip()
+    # CrossRef titles/abstracts often carry JATS/HTML markup (<i>, <sub>, ...)
+    # and embedded newlines; strip tags and collapse whitespace.
+    def _clean_text(val: str) -> str:
+        return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', val or '')).strip()
+
+    abstract = _clean_text(cr.get("abstract", ""))
 
     item = {
         "itemType": item_type,
-        "title": " ".join(cr.get("title", ["Untitled"])),
+        "title": _clean_text(" ".join(cr.get("title", ["Untitled"]))) or "Untitled",
         "creators": creators,
         "date": date_str,
         "DOI": cr.get("DOI", ""),
