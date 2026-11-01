@@ -26,8 +26,7 @@ continuously. A free, effectively-unlimited backend that keeps the pipeline
 unchanged would be preferable long term.
 
 ## Proposed solution
-Use a **self-hosted WebDAV server on the existing LAN Ubuntu box
-(`bg@10.0.0.1`)** as Zotero's file-sync backend instead of Zotero storage.
+Use a **self-hosted WebDAV server on the existing LAN Ubuntu server** as Zotero's file-sync backend instead of Zotero storage.
 
 - Free and effectively unlimited (bounded only by the server's disk).
 - **No importer changes required** — Zotero still creates `imported_file`
@@ -35,7 +34,7 @@ Use a **self-hosted WebDAV server on the existing LAN Ubuntu box
   storage. Offline reading + annotation continue to work on the desktop app.
 
 ## Tasks
-- [ ] Stand up a WebDAV endpoint on `10.0.0.1` (nginx, or Apache `mod_dav`),
+- [ ] Stand up a WebDAV endpoint on the LAN server (nginx, or Apache `mod_dav`),
       scoped to a dedicated `zotero/` directory, with auth (and TLS if ever
       exposed beyond the LAN).
 - [ ] Configure Zotero → Preferences → Sync → File Syncing → "My Library"

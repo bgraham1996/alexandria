@@ -1,5 +1,6 @@
-# Secrets
+# Secrets / personal config
 configs/.env
+configs/config.yaml
 
 # Runtime export state (machine-local; keep on disk, don't track)
 .obsidian_export_state.json

@@ -1,18 +1,18 @@
-# Alexandria — paper pipeline configuration
+# Alexandria — paper pipeline configuration (EXAMPLE)
 #
+# Copy this file to configs/config.yaml and edit for your setup.
 # Non-secret settings only. Zotero API credentials live in configs/.env
-# (see .env.example). CLI flags on the import/export scripts override the
-# values here.
+# (see .env.example). CLI flags on the import/export scripts override these.
 
 zotero:
   # "user" or "group"
   library_type: user
 
 obsidian:
-  # Path to the Obsidian vault (moved here from the old OBSIDIAN_VAULT_PATH)
-  vault_path: ~/Vaults/Immrama
+  # Path to your Obsidian vault
+  vault_path: ~/path/to/your/Vault
   # Subfolder within the vault where paper notes are written
-  notes_folder: Immrama/Papers
+  notes_folder: Papers
 
 import:
   # Folder scanned for incoming PDFs

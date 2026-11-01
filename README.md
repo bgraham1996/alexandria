@@ -22,7 +22,8 @@ app/
   paper_importer.py   # stage 1: PDFs -> Zotero
   paper_exporter.py   # stage 2: Zotero -> Obsidian notes
 configs/
-  config.yaml         # non-secret settings (vault path, dirs, thresholds, tags)
+  config.example.yaml # template -> copy to config.yaml
+  config.yaml         # your settings (vault path, dirs, thresholds); gitignored
   .env                # Zotero API credentials (gitignored)
   .env.example        # template for .env
 .obsidian_export_state.json   # export state (machine-local, gitignored)
@@ -33,7 +34,8 @@ configs/
 ```bash
 cd ~/dev/alexandria
 uv sync                       # create .venv and install deps
-cp configs/.env.example configs/.env   # then fill in your Zotero keys
+cp configs/config.example.yaml configs/config.yaml  # then edit paths
+cp configs/.env.example configs/.env               # then fill in Zotero keys
 ```
 
 Edit `configs/config.yaml` for your vault path, source/output folders,
