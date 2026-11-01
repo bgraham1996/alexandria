@@ -38,6 +38,7 @@ import os
 import re
 import shutil
 import sys
+from collections import Counter
 from pathlib import Path
 
 import requests
@@ -357,20 +358,54 @@ def detect_paper(pdf_path: str, pages: list[str], metadata: dict, last_pages: li
 # Identifier and title extraction
 # =========================================================================
 
+# DOI prefixes for data repositories (figshare / zenodo / dryad / osf).
+# These appear in data-availability sections and must not outrank the article.
+DATA_REPO_PREFIXES = ("10.6084/", "10.5281/", "10.5061/", "10.17605/")
+
+
 def extract_doi(text: str) -> str | None:
-    # Try standard regex first
-    m = DOI_RE.search(text)
-    if m:
-        return m.group(1).rstrip(".")
-    # Try with line breaks removed (DOIs sometimes split across lines)
-    joined = text.replace("\n", " ").replace("  ", " ")
-    m = DOI_MULTILINE_RE.search(joined)
-    if m:
-        doi = m.group(1).rstrip(".")
-        # Clean up any trailing non-DOI characters
-        doi = re.sub(r'[\s,;]+$', '', doi)
-        return doi
-    return None
+    """Return the paper's DOI, choosing the best candidate rather than the
+    first match.
+
+    A single PDF commonly contains several DOI-like strings: a truncated
+    publisher stub from a wrapped link (e.g. "10.1073/pnas." -> "10.1073/pnas",
+    which resolves to the *journal* on CrossRef), the real article DOI repeated
+    in every page footer, and dataset DOIs in the data-availability section.
+    We score candidates so the article DOI wins:
+      1. articles over data-repository DOIs,
+      2. a complete suffix (contains a digit) over a publisher stub,
+      3. the most frequently printed DOI (the footer article DOI),
+      4. then the most specific (longest).
+    Trailing punctuation is stripped so lookups don't 404 on a stray ';'/'.'.
+    """
+    def _clean(doi: str) -> str:
+        return re.sub(r'[\s.,;:]+$', '', doi)
+
+    raw = []
+    for pat, source in ((DOI_RE, text),
+                        (DOI_MULTILINE_RE, text.replace("\n", " ").replace("  ", " "))):
+        for m in pat.finditer(source):
+            d = _clean(m.group(1))
+            if d:
+                raw.append(d)
+    if not raw:
+        return None
+
+    counts = Counter(d.lower() for d in raw)
+    first_case = {}
+    for d in raw:
+        first_case.setdefault(d.lower(), d)
+
+    def score(key: str):
+        suffix = key.split("/", 1)[1] if "/" in key else ""
+        return (
+            0 if key.startswith(DATA_REPO_PREFIXES) else 1,
+            1 if any(c.isdigit() for c in suffix) else 0,
+            counts[key],
+            len(key),
+        )
+
+    return first_case[max(counts, key=score)]
 
 
 def extract_arxiv_id(text: str) -> str | None:
@@ -628,6 +663,22 @@ def find_or_create_collection(zot, name: str) -> str | None:
 # Main pipeline
 # =========================================================================
 
+def _pdf_stored(zot, item_key: str) -> bool:
+    """True if the item has a PDF attachment with real stored file content
+    (a non-empty md5) — i.e. the upload actually landed, not a link/placeholder.
+    """
+    try:
+        for child in zot.children(item_key):
+            d = child.get("data", {})
+            if (d.get("itemType") == "attachment"
+                    and d.get("linkMode") == "imported_file"
+                    and d.get("md5")):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def process_pdf(
     pdf_path: str,
     threshold: int = 45,
@@ -721,6 +772,12 @@ def process_pdf(
     if doi:
         log(f"  Looking up DOI on CrossRef...")
         cr = lookup_crossref_doi(doi)
+        container_types = ("journal", "journal-issue", "journal-volume",
+                           "book-series", "book-set")
+        if cr and cr.get("type") in container_types:
+            log(f"  DOI resolved to a {cr.get('type')} (container), not an "
+                f"article — ignoring and trying title/arXiv")
+            cr = None
         if cr:
             zotero_item = crossref_to_zotero(cr)
             source = "CrossRef (DOI)"
@@ -818,19 +875,34 @@ def process_pdf(
     item_key = resp["successful"]["0"]["key"]
     log(f"  Created item: {item_key}")
 
-    # Attach PDF
+    # Attach PDF — then VERIFY the file actually stored. A silent upload
+    # failure (e.g. Zotero storage quota) otherwise leaves a useless
+    # "link only" item with no offline / annotatable PDF.
     log(f"  Uploading PDF...")
+    upload_ok = False
+    attach_err = ""
     try:
         zot.attachment_simple([pdf_path], item_key)
-        log(f"  PDF attached successfully")
+        upload_ok = _pdf_stored(zot, item_key)
+        if not upload_ok:
+            attach_err = "no stored file found after upload"
     except Exception as e:
-        if "quota" in str(e).lower():
-            log(f"  Warning: Storage quota exceeded — item created but PDF not uploaded")
-        else:
-            log(f"  Warning: PDF attach failed: {e}")
+        attach_err = ("Zotero storage quota exceeded"
+                      if "quota" in str(e).lower() else str(e))
+
+    if not upload_ok:
+        # Item exists but is link-only. Leave the PDF where it is so a re-run
+        # retries it, and flag this loudly rather than reporting a false success.
+        result["status"] = "no_file"
+        result["message"] = (f"Item {item_key} created but PDF NOT stored "
+                             f"({attach_err}); PDF left in place for retry")
+        log(f"  ERROR: PDF not stored ({attach_err}).")
+        log(f"  Item is link-only — PDF left at {pdf_path} for retry.")
+        return result
 
     result["status"] = "imported"
-    result["message"] = f"Imported as {item_key}"
+    result["message"] = f"Imported as {item_key} (PDF stored)"
+    log(f"  PDF attached and verified")
     log(f"  Done!")
 
     # --- Rename and move PDF if output_dir is set ---
@@ -947,15 +1019,19 @@ def main():
         imported = sum(1 for r in results if r["status"] == "imported")
         not_paper = sum(1 for r in results if r["status"] == "not_paper")
         no_meta = sum(1 for r in results if r["status"] == "no_metadata")
+        no_file = sum(1 for r in results if r["status"] == "no_file")
         failed = sum(1 for r in results if r["status"] in ("failed", "error"))
         print(f"\nSummary: {imported} imported, {not_paper} not papers, "
-              f"{no_meta} no metadata, {failed} failed")
+              f"{no_meta} no metadata, {no_file} created-but-no-PDF, {failed} failed")
+        if no_file:
+            print(f"WARNING: {no_file} item(s) were created WITHOUT a stored PDF "
+                  f"(link-only); their PDFs were left in place for retry.")
 
-    # Exit code: 0 if at least one was imported
-    if any(r["status"] == "imported" for r in results):
-        sys.exit(0)
-    elif any(r["status"] == "not_paper" for r in results):
+    # Exit code: non-zero if anything is link-only or nothing imported cleanly.
+    if any(r["status"] == "no_file" for r in results):
         sys.exit(1)
+    elif any(r["status"] == "imported" for r in results):
+        sys.exit(0)
     else:
         sys.exit(1)
 
