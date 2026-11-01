@@ -1,5 +1,7 @@
 # Alexandria
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![Python](https://img.shields.io/badge/python-3.13-blue.svg) ![uv](https://img.shields.io/badge/managed%20with-uv-6340ac.svg)
+
 A two-stage research-paper pipeline between **Zotero** and **Obsidian**:
 
 1. **Import** — scan a folder of PDFs, detect which are research papers
@@ -60,3 +62,7 @@ uv run python app/paper_exporter.py --dry-run
 
 CLI flags always override `config.yaml`. The shell aliases `importpapers`,
 `exportpapers`, and `library` (run both) point at this project.
+
+## License
+
+[MIT](LICENSE) © Ben Graham

@@ -3,6 +3,7 @@ name = "alexandria"
 version = "0.1.0"
 description = "Zotero <-> Obsidian paper pipeline: auto-import research PDFs into Zotero and export tagged items as Obsidian notes."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.13"
 dependencies = [
     "pyzotero>=1.11.0",
