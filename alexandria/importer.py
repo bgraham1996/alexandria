@@ -366,6 +366,10 @@ def detect_paper(pdf_path: str, pages: list[str], metadata: dict, last_pages: li
 # These appear in data-availability sections and must not outrank the article.
 DATA_REPO_PREFIXES = ("10.6084/", "10.5281/", "10.5061/", "10.17605/")
 
+# Tail that marks a figure/table/supplement component of an article DOI:
+# ".t001", ".g003", ".s001" (PLOS), ".sa1" (eLife), ".f2" ...
+COMPONENT_TAIL_RE = re.compile(r'[a-z]{1,3}\d{1,4}', re.IGNORECASE)
+
 
 def extract_doi(text: str) -> str | None:
     """Return the paper's DOI, choosing the best candidate rather than the
@@ -406,10 +410,22 @@ def extract_doi(text: str) -> str | None:
     for d in raw:
         first_case.setdefault(d.lower(), d)
 
+    def is_component(key: str) -> bool:
+        # Figure / table / supplement DOIs extend the article DOI with a short
+        # tag, e.g. "10.1371/journal.pone.0000308.t001". They resolve to a
+        # CrossRef "component" with no title or authors, so the article DOI
+        # they extend must win.
+        return any(
+            key.startswith(other + ".")
+            and COMPONENT_TAIL_RE.fullmatch(key[len(other) + 1:])
+            for other in counts
+        )
+
     def score(key: str):
         suffix = key.split("/", 1)[1] if "/" in key else ""
         return (
             0 if key.startswith(DATA_REPO_PREFIXES) else 1,
+            0 if is_component(key) else 1,
             1 if any(c.isdigit() for c in suffix) else 0,
             counts[key],
             len(key),
@@ -761,6 +777,86 @@ def _pdf_stored(zot, item_key: str) -> bool:
     return False
 
 
+def _norm_title(title: str) -> str:
+    return re.sub(r'[^a-z0-9]+', ' ', (title or '').lower()).strip()
+
+
+def find_existing_item(zot, zotero_item: dict) -> dict | None:
+    """Return a library item that is the same work as ``zotero_item``, or None.
+
+    The Zotero web API's ``q`` search only covers title / creator / year — it
+    does NOT search the DOI field — so we search on the title and then compare
+    DOIs (falling back to an exact normalised-title match when either side has
+    no DOI). When several copies exist, one that already has a stored PDF wins;
+    otherwise the oldest.
+    """
+    title = zotero_item.get("title") or ""
+    if not _norm_title(title) or title == "Untitled":
+        return None
+    doi = (zotero_item.get("DOI") or "").lower()
+    # q is a phrase search, so use a leading run of words rather than the
+    # whole title (robust to trailing subtitle / punctuation differences).
+    query = " ".join(title.split()[:8])
+    try:
+        candidates = zot.top(q=query, limit=50)
+    except Exception:
+        return None
+
+    matches = []
+    for it in candidates:
+        d = it.get("data", {})
+        if d.get("itemType") in ("attachment", "note"):
+            continue
+        their_doi = (d.get("DOI") or "").lower()
+        if doi and their_doi:
+            same = doi == their_doi
+        else:
+            same = _norm_title(d.get("title", "")) == _norm_title(title)
+        if same:
+            matches.append(it)
+    if not matches:
+        return None
+    matches.sort(key=lambda it: it["data"].get("dateAdded", ""))
+    for it in matches:
+        if _pdf_stored(zot, it["data"]["key"]):
+            return it
+    return matches[0]
+
+
+def _attach_pdf(zot, item_key: str, pdf_path: str) -> tuple[bool, str]:
+    """Upload ``pdf_path`` as a stored attachment of ``item_key`` and verify it
+    landed. Returns (ok, error_message).
+
+    If the item already has an empty PDF placeholder — the attachment record
+    left behind when an earlier upload failed (e.g. on quota) — the file is
+    uploaded into that placeholder rather than adding a second attachment.
+    """
+    try:
+        placeholder = None
+        for child in zot.children(item_key):
+            d = child.get("data", {})
+            if (d.get("itemType") == "attachment"
+                    and d.get("linkMode") == "imported_file"
+                    and d.get("contentType") == "application/pdf"
+                    and not d.get("md5")):
+                placeholder = d["key"]
+                break
+        if placeholder:
+            zot.upload_attachments([{"key": placeholder, "filename": pdf_path}])
+        else:
+            zot.attachment_simple([pdf_path], item_key)
+    except Exception as e:
+        msg = str(e)
+        if "quota" in msg.lower():
+            m = re.search(r'\(([\d.]+)\s*(?:>|&gt;)\s*([\d.]+)\)', msg)
+            detail = f" (would need {m.group(1)} MB of {m.group(2)} MB)" if m else ""
+            return False, f"Zotero storage quota exceeded{detail}"
+        return False, msg
+    if _pdf_stored(zot, item_key):
+        return True, ""
+    return False, "no stored file found after upload"
+
+
 def process_pdf(
     pdf_path: str,
     threshold: int = 45,
@@ -871,6 +967,14 @@ def process_pdf(
             log(f"  DOI resolved to a {cr.get('type')} (container), not an "
                 f"article — ignoring and trying title/arXiv")
             cr = None
+        if cr and cr.get("type") == "component":
+            # A figure/table/supplement DOI: it has no title or authors of its
+            # own. Try the article DOI it extends; never import the component.
+            parent = doi.rsplit(".", 1)[0]
+            log(f"  DOI is a component (figure/table) — trying {parent}")
+            cr = lookup_crossref_doi(parent) if "/" in parent else None
+            if cr and cr.get("type") in container_types + ("component",):
+                cr = None
         if cr:
             zotero_item = crossref_to_zotero(cr)
             source = "CrossRef (DOI)"
@@ -968,57 +1072,57 @@ def process_pdf(
         if coll_key:
             zotero_item["collections"] = [coll_key]
 
-    # Duplicate check
-    if zotero_item.get("DOI"):
-        existing = zot.items(q=zotero_item["DOI"], qmode="everything")
-        for item in existing:
-            if item["data"].get("DOI", "").lower() == zotero_item["DOI"].lower():
-                result["status"] = "failed"
-                result["message"] = "Duplicate — DOI already in library"
-                log(f"  Skipping: item with this DOI already exists")
-                return result
+    # Duplicate check. An existing item that already has its PDF is a true
+    # duplicate and is skipped; one WITHOUT a stored PDF is a link-only item
+    # left by an earlier failed upload, so we retry the upload onto it instead
+    # of creating yet another copy.
+    item_key = None
+    existing = find_existing_item(zot, zotero_item)
+    if existing:
+        existing_key = existing["data"]["key"]
+        if _pdf_stored(zot, existing_key):
+            result["status"] = "failed"
+            result["message"] = (f"Duplicate — already in library as "
+                                 f"{existing_key} with a stored PDF")
+            log(f"  Skipping: already in library as {existing_key}")
+            return result
+        item_key = existing_key
+        log(f"  Already in library as {item_key} but with no stored PDF — "
+            f"retrying the upload onto that item")
 
     # Create item
-    log(f"  Creating Zotero item...")
-    try:
-        resp = zot.create_items([zotero_item])
-    except Exception as e:
-        result["message"] = f"API error: {e}"
-        log(f"  Error creating item: {e}")
-        return result
+    if not item_key:
+        log(f"  Creating Zotero item...")
+        try:
+            resp = zot.create_items([zotero_item])
+        except Exception as e:
+            result["message"] = f"API error: {e}"
+            log(f"  Error creating item: {e}")
+            return result
 
-    if not resp or "successful" not in resp or not resp["successful"]:
-        result["status"] = "failed"
-        result["message"] = f"Item creation failed: {resp.get('failed', 'unknown')}"
-        log(f"  Error: {result['message']}")
-        return result
+        if not resp or "successful" not in resp or not resp["successful"]:
+            result["status"] = "failed"
+            result["message"] = f"Item creation failed: {resp.get('failed', 'unknown')}"
+            log(f"  Error: {result['message']}")
+            return result
 
-    item_key = resp["successful"]["0"]["key"]
-    log(f"  Created item: {item_key}")
+        item_key = resp["successful"]["0"]["key"]
+        log(f"  Created item: {item_key}")
 
     # Attach PDF — then VERIFY the file actually stored. A silent upload
     # failure (e.g. Zotero storage quota) otherwise leaves a useless
     # "link only" item with no offline / annotatable PDF.
     log(f"  Uploading PDF...")
-    upload_ok = False
-    attach_err = ""
-    try:
-        zot.attachment_simple([pdf_path], item_key)
-        upload_ok = _pdf_stored(zot, item_key)
-        if not upload_ok:
-            attach_err = "no stored file found after upload"
-    except Exception as e:
-        attach_err = ("Zotero storage quota exceeded"
-                      if "quota" in str(e).lower() else str(e))
+    upload_ok, attach_err = _attach_pdf(zot, item_key, pdf_path)
 
     if not upload_ok:
         # Item exists but is link-only. Leave the PDF where it is so a re-run
         # retries it, and flag this loudly rather than reporting a false success.
         result["status"] = "no_file"
-        result["message"] = (f"Item {item_key} created but PDF NOT stored "
+        result["message"] = (f"Item {item_key} exists but PDF NOT stored "
                              f"({attach_err}); PDF left in place for retry")
         log(f"  ERROR: PDF not stored ({attach_err}).")
-        log(f"  Item is link-only — PDF left at {pdf_path} for retry.")
+        log(f"  Item is link-only — PDF left at {pdf_path}; re-run to retry.")
         return result
 
     result["status"] = "imported"
