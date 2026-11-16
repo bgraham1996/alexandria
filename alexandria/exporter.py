@@ -49,6 +49,7 @@ from alexandria.config import load_env, load_settings, expand, STATE_FILE
 
 try:
     from pyzotero import zotero
+    from pyzotero.errors import ResourceNotFoundError
 except ImportError:
     print("Error: pyzotero not installed. Run: pip install pyzotero")
     sys.exit(2)
@@ -289,6 +290,54 @@ def build_note(item_data: dict, vault_name: str = "", notes_folder: str = "Paper
     return "\n".join(lines)
 
 
+def _note_field(text: str, field: str) -> str:
+    m = re.search(rf'^{field}:[ \t]*(\S+)[ \t]*$', text, re.MULTILINE)
+    return m.group(1).strip('"\'') if m else ""
+
+
+def _item_is_live(zot, key: str) -> bool:
+    """True unless the Zotero item is confirmed deleted or trashed. Any other
+    failure counts as live, so an API hiccup never rewrites a note."""
+    try:
+        return not zot.item(key).get("data", {}).get("deleted")
+    except ResourceNotFoundError:
+        return False
+    except Exception:
+        return True
+
+
+def plan_note(output_dir: Path, filename: str, data: dict, zot) -> tuple[str, Path, str]:
+    """Decide where an item's note goes. Returns (action, path, old_key):
+
+    * ``create`` — no note for this paper yet; write a new file at ``path``.
+    * ``exists`` — ``path`` is already this paper's note (same Zotero key, or
+      the key of a duplicate item still in the library); leave it alone.
+    * ``relink`` — ``path`` is this paper's note but its Zotero item
+      (``old_key``) no longer exists; re-point it at this item.
+
+    Existing notes named ``Title.md`` / ``Title (n).md`` count as the same
+    paper when their DOI matches this item's, or when either has no DOI.
+    """
+    key = data.get("key", "")
+    doi = (data.get("DOI") or "").lower()
+    stem = Path(filename).stem
+    free = None
+    for i in range(1, 100):
+        path = output_dir / (f"{stem}.md" if i == 1 else f"{stem} ({i}).md")
+        if not path.exists():
+            free = free or path
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        note_key = _note_field(text, "zotero_key")
+        note_doi = _note_field(text, "doi").lower()
+        if not note_key or (doi and note_doi and doi != note_doi):
+            continue  # a different paper (or not a paper note) with this title
+        if note_key == key or _item_is_live(zot, note_key):
+            return "exists", path, note_key
+        return "relink", path, note_key
+    return "create", free or output_dir / f"{stem} (100).md", ""
+
+
 # ---------------------------------------------------------------------------
 # Main export logic
 # ---------------------------------------------------------------------------
@@ -382,28 +431,42 @@ def export_items(
             "status": "pending",
         }
 
+        # A note for this paper may already exist (the item was re-imported,
+        # or is a duplicate in Zotero). Reuse it instead of writing a second
+        # "Title (2).md" copy; only a genuinely different paper that happens
+        # to share the title gets a numbered filename.
+        action, filepath, old_key = plan_note(output_dir, filename, data, zot)
+        result["filename"] = filepath.name
+
         if dry_run:
-            log(f"    [DRY RUN] Would create: {filepath}")
+            verb = {"create": "create", "relink": "re-point existing note",
+                    "exists": "keep existing note"}[action]
+            log(f"    [DRY RUN] Would {verb}: {filepath}")
             result["status"] = "dry_run"
         else:
             try:
-                # Handle filename collisions
-                if filepath.exists():
-                    stem = filepath.stem
-                    for i in range(2, 100):
-                        filepath = output_dir / f"{stem} ({i}).md"
-                        if not filepath.exists():
-                            break
-                    result["filename"] = filepath.name
-
-                filepath.write_text(note_content, encoding="utf-8")
-                log(f"    Created: {filepath.name}")
-                result["status"] = "created"
+                if action == "create":
+                    filepath.write_text(note_content, encoding="utf-8")
+                    log(f"    Created: {filepath.name}")
+                    result["status"] = "created"
+                    new_exports += 1
+                elif action == "relink":
+                    # The note's old Zotero item is gone: point the existing
+                    # note (and anything the user added to it) at the new item.
+                    text = filepath.read_text(encoding="utf-8")
+                    filepath.write_text(text.replace(old_key, key), encoding="utf-8")
+                    log(f"    Re-pointed existing note {filepath.name} "
+                        f"({old_key} -> {key})")
+                    result["status"] = "relinked"
+                else:
+                    log(f"    Note already exists: {filepath.name}"
+                        + (f" (for duplicate Zotero item {old_key})"
+                           if old_key and old_key != key else ""))
+                    result["status"] = "exists"
                 result["path"] = str(filepath)
 
                 # Track as exported
                 exported_keys.add(key)
-                new_exports += 1
 
                 # Optionally remove the tag from Zotero
                 if remove_tag:
